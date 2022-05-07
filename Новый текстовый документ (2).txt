@@ -1,0 +1,48 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+
+namespace PacmanWinFormsApp
+{
+    public partial class Form1 : Form
+    {
+        System.Drawing.Text.PrivateFontCollection f = new System.Drawing.Text.PrivateFontCollection();
+        public Form1()
+        {
+            InitializeComponent();
+            (button4.FlatAppearance.BorderSize, button4.FlatStyle, button1.FlatAppearance.BorderSize, button1.FlatStyle, button2.FlatAppearance.BorderSize, button2.FlatStyle, button3.FlatAppearance.BorderSize, button3.FlatStyle, button5.FlatAppearance.BorderSize, button5.FlatStyle) = (0, FlatStyle.Flat, 0, FlatStyle.Flat, 0, FlatStyle.Flat, 0, FlatStyle.Flat, 0, FlatStyle.Flat);
+            f.AddFontFile("Teletactile.ttf");
+            (button1.Font, button2.Font, button3.Font, button4.Font, button5.Font, label8.Font) = (new Font(f.Families[0], 32, GraphicsUnit.Pixel), new Font(f.Families[0], 32, GraphicsUnit.Pixel), new Font(f.Families[0], 32, GraphicsUnit.Pixel), new Font(f.Families[0], 32, GraphicsUnit.Pixel), new Font(f.Families[0], 32, GraphicsUnit.Pixel), new Font(f.Families[0], 32, GraphicsUnit.Pixel)); 
+            (label4.Size, label5.Size, label6.Size, this.Size) = (label3.Size, label2.Size, label1.Size, new Size(59 * 16, 42 * 16));
+            (panel6.Location, panel5.Location) = (new Point(Width / 2 - panel6.Width / 2, Height / 2 - panel6.Height / 2), new Point(Width / 2 - panel5.Width / 2, Height / 2 - panel5.Height / 2));
+        }
+        private void button1_Click(object sender, EventArgs e) 
+        { 
+            game.create_classic_game();
+            panel5.Visible = false;
+            this.Focus();
+        }
+        private void button2_Click(object sender, EventArgs e) 
+        { 
+            game.create_new_game();
+            panel5.Visible = false;
+            this.Focus();
+        }
+        private void button5_Click(object sender, EventArgs e) => this.Close();
+        private void Form1_Load(object sender, EventArgs e)
+        {
+            game = new(new Panel[] { panel4, panel6, panel7, panel8, panel9 }, label7, this, button3, button4);
+            game.game_ended += () => { panel5.BeginInvoke(new Action(() => panel5.Visible = true)); CreateGraphics().Clear(Color.Black); };
+        }
+
+        //private void button3_Click(object sender, EventArgs e) => this.Focus();
+
+        //private void button4_Click(object sender, EventArgs e) => this.Focus();
+    }
+}

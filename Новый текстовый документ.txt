@@ -1,0 +1,1473 @@
+using System;
+using System.Drawing;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Timers;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+namespace PacmanWinFormsApp
+{
+    enum type_of_object { wall, point, superbonus, gates, bonus, superpoint, barrier, ghosts_wall };
+    class generall_class
+    {
+        protected static int size_of_kletki = 16;
+        protected static Form1 place_for_game;
+        public static pole game;
+    }
+    abstract class object_in_kletka : generall_class, IDisposable
+    {
+        protected int x, y;
+        protected kletka my_kletka;
+        abstract public bool free_or_not_for_phisic_object { get; }
+        abstract public bool free_or_not_for_ghost_object { get; }
+        public object_in_kletka(int x, int y, kletka my_kletka) => (this.x, this.y, this.my_kletka) = (x, y, my_kletka);
+        protected abstract Bitmap get_picture();
+        public virtual void show() => place_for_game.CreateGraphics().DrawImage(get_picture(), x, y);
+        public virtual void show(Graphics frame, int i, int j) => frame.DrawImage(get_picture(), j * size_of_kletki, i * size_of_kletki);
+        virtual public void Dispose() { my_kletka = null; }
+    }
+    abstract class generall_bonus : object_in_kletka
+    {
+        public static event Action<int> eaten_generall_bonus_event;
+        public override bool free_or_not_for_phisic_object { get => true; }
+        public override bool free_or_not_for_ghost_object { get => true; }
+        protected generall_bonus(int x, int y, kletka my_kletka) : base(x, y, my_kletka) => my_kletka.checking_eat += call_event_eaten;
+        public override void Dispose()
+        {
+            my_kletka.checking_eat -= call_event_eaten;
+            base.Dispose();
+        }
+        protected void this_eaten(int score) => eaten_generall_bonus_event(score);
+        protected abstract void call_event_eaten();
+    }
+    abstract class temporary_generall_bonus : generall_bonus
+    {
+        System.Timers.Timer my_timer_for_dead;
+        public event Action i_am_dead;
+        public bool is_temporary;
+        void call_event_dead(int int1, int int2, int int3) => i_am_dead();
+        protected temporary_generall_bonus(int x, int y, kletka my_kletka, bool is_temporary) : base(x, y, my_kletka)
+        {
+            if (this.is_temporary = is_temporary)
+            {
+                my_timer_for_dead = new(10000) { AutoReset = false };
+                my_timer_for_dead.Elapsed += delegate { i_am_dead(); };
+                if (!game.game_is_stopped_on_pause)
+                    start_timer();
+                game.start_game += start_timer;
+                game.stop_game += stop_timer;
+                game.restart_event += call_event_dead;
+            }
+        }
+        public override void Dispose()
+        {
+            i_am_dead = null;
+            if (is_temporary)
+            {
+                my_timer_for_dead.Enabled = false;
+                my_timer_for_dead.Dispose();
+                game.start_game -= start_timer;
+                game.stop_game -= stop_timer;
+                game.restart_event -= call_event_dead;
+            }
+            base.Dispose();
+        }
+        void start_timer() => my_timer_for_dead.Start(); 
+        void stop_timer() => my_timer_for_dead.Stop();
+    }
+    abstract class generall_wall : object_in_kletka
+    {
+        public static event Func<int, int, bool[,]> get_walls_for_changing_picture;
+        public static event Action<int, int> this_wall_destroyed_or_create;
+        protected enum napravlenie_for_wall {horizontal, vertical, left_up, right_up, right_down, left_down };
+        protected napravlenie_for_wall? naprav;
+        protected int xk, yk;
+        protected virtual void opred_naprav(bool[,] walls_around)
+        {
+            if (!walls_around[0, 1] && !walls_around[2, 1] && (walls_around[1, 0] || walls_around[1, 2])) naprav = napravlenie_for_wall.vertical;
+            else if ((walls_around[0, 1] || walls_around[2, 1] ) && !walls_around[1, 0] && !walls_around[1, 2]) naprav = napravlenie_for_wall.horizontal;
+            else if (!walls_around[2, 1] && !walls_around[1, 2] && (walls_around[2, 2] || walls_around[0, 1] && walls_around[1, 0])) naprav = napravlenie_for_wall.right_up;
+            else if (!walls_around[1, 0] && !walls_around[0, 1] && (walls_around[0, 0] || walls_around[1, 2] && walls_around[2, 1])) naprav = napravlenie_for_wall.left_down;
+            else if (!walls_around[0, 1] && !walls_around[1, 2] && (walls_around[0, 2] || walls_around[1, 0] && walls_around[2, 1])) naprav = napravlenie_for_wall.right_down;
+            else if (!walls_around[1, 0] && !walls_around[2, 1] && (walls_around[2, 0] || walls_around[0, 1] && walls_around[1, 2])) naprav = napravlenie_for_wall.left_up;
+            else naprav = null;
+        }
+        void changing_napravlenie() => opred_naprav(get_walls_for_changing_picture(xk, yk));
+        public void nearest_wall_destoyed()
+        {
+            changing_napravlenie();
+            show();
+        }
+        public override bool free_or_not_for_phisic_object { get => false; }
+        public override bool free_or_not_for_ghost_object { get => false; }
+        public override void Dispose() 
+        { 
+            if(!game.map_is_setting && !game.map_is_deleting) 
+                this_wall_destroyed_or_create(xk, yk);
+            game.walls_is_setted -= changing_napravlenie;
+            base.Dispose(); 
+        }
+        protected generall_wall(int x, int y, int xk, int yk, kletka my_kletka) : base(x, y, my_kletka) 
+        { 
+            (this.xk, this.yk) = (xk, yk);
+            game.walls_is_setted += changing_napravlenie;
+            if (!game.map_is_setting)
+            {
+                this_wall_destroyed_or_create(xk, yk);
+                nearest_wall_destoyed();
+            }
+        }
+    }
+    class point : generall_bonus
+    {
+        public static event Action eaten_point;
+        protected override void call_event_eaten() => this_eaten(10);
+        public point(int x, int y, kletka my_kletka) : base(x, y, my_kletka) { }
+        public override void Dispose() 
+        { 
+            if (!game.map_is_deleting) 
+                eaten_point(); 
+            base.Dispose(); 
+        }
+        protected override Bitmap get_picture() => Properties.Resources.Point;
+    }
+    class superbonus : temporary_generall_bonus
+    {
+        public enum type_of_bonus { bullet, superpoint, deleting_ghost_wall}
+        public static event Action<type_of_bonus> pribavlenie_bonusa;
+        protected override void call_event_eaten()
+        { 
+            this_eaten(new Random().Next(50, 5000)); 
+            pribavlenie_bonusa((type_of_bonus)(new Random().Next() % 3)); 
+        }
+        public superbonus(int x, int y, kletka my_kletka, bool is_temporary) : base(x, y, my_kletka, is_temporary) { }
+        protected override Bitmap get_picture() => Properties.Resources.SuperBonus;
+    }
+    class wall : generall_wall
+    {
+        protected override Bitmap get_picture() => naprav switch { napravlenie_for_wall.horizontal => Properties.Resources.WallHorizontal, napravlenie_for_wall.vertical => Properties.Resources.WallVertical, napravlenie_for_wall.left_down => Properties.Resources.WallLeftDown, napravlenie_for_wall.left_up => Properties.Resources.WallLeftUp, napravlenie_for_wall.right_up => Properties.Resources.WallRightUp, napravlenie_for_wall.right_down => Properties.Resources.WallRightDown, null => Properties.Resources.SimpleKletka };
+        public wall(int x, int y, int xk, int yk, kletka my_kletka) : base(x, y, xk, yk, my_kletka) { }
+    }
+    class gates : generall_wall
+    {
+        protected override Bitmap get_picture() => Properties.Resources.Gates;
+        public gates(int x, int y, int xk, int yk, kletka my_kletka) : base(x, y, xk, yk, my_kletka) { }
+    }
+    class bonus : temporary_generall_bonus
+    {
+        protected override void call_event_eaten() => this_eaten(new Random().Next(50, 5000));
+        Bitmap my_picture;
+        protected override Bitmap get_picture() => my_picture;
+        public bonus(int x, int y, kletka my_kletka, bool is_temporary) : base(x, y, my_kletka, is_temporary) { my_picture = new Random().Next(0, 3) switch { 0 => Properties.Resources.Apple, 1 => Properties.Resources.Peach, 2 => Properties.Resources.Cherry, 3 => Properties.Resources.Strawberry }; }
+    }
+    class superpoint : generall_bonus
+    {
+        static Bitmap picture;
+        static superpoint()
+        {
+            superbonus.pribavlenie_bonusa += (type) => { if (type == superbonus.type_of_bonus.superpoint) superpoint_eaten(); };
+            picture = new(size_of_kletki, size_of_kletki);
+            Brush br = new SolidBrush(Color.Black);
+            Graphics.FromImage(picture).FillRectangle(br, 0, 0, size_of_kletki, size_of_kletki);
+            br.Dispose();
+            br = new SolidBrush(Color.Green);
+            Graphics.FromImage(picture).FillEllipse(br, new Rectangle(0, 0, size_of_kletki, size_of_kletki));
+            br.Dispose();
+        }
+        public static event Action superpoint_eaten;
+        protected override void call_event_eaten()
+        { 
+            this_eaten(50); 
+            superpoint_eaten(); 
+        }
+        public superpoint(int x, int y, kletka my_kletka) : base(x, y, my_kletka) { }
+        protected override Bitmap get_picture() => picture;
+    }
+    class barrier : generall_wall
+    {
+        System.Timers.Timer my_timer_for_dead;
+        public event Action i_am_dead_by_time;
+        protected override void opred_naprav(bool[,] walls_around) => naprav = (!walls_around[1, 0] && !walls_around[1, 2]) ? napravlenie_for_wall.horizontal : napravlenie_for_wall.vertical;
+        protected override Bitmap get_picture() => naprav switch { napravlenie_for_wall.horizontal => Properties.Resources.BarrierHorizontal, napravlenie_for_wall.vertical => Properties.Resources.BarrierVertical, napravlenie_for_wall.left_down => Properties.Resources.BarrierLeftDown, napravlenie_for_wall.left_up => Properties.Resources.BarrierLeftUp, napravlenie_for_wall.right_up => Properties.Resources.BarrierRightUp, napravlenie_for_wall.right_down => Properties.Resources.BarrierRightDown, null => Properties.Resources.SimpleKletka };
+        void call_event_dead(int int1, int int2, int int3) => i_am_dead_by_time();
+        public barrier(int x, int y, int xk, int yk, kletka my_kletka) : base(x, y, xk, yk, my_kletka) 
+        {
+            my_timer_for_dead = new(10000);
+            my_timer_for_dead.Elapsed += delegate { i_am_dead_by_time(); };
+            game.stop_game += stop_timer;
+            game.start_game += start_timer;
+            game.restart_event += call_event_dead;
+            my_timer_for_dead.Start();
+        }
+        void stop_timer() => my_timer_for_dead.Stop();
+        void start_timer() => my_timer_for_dead.Start();
+        public override void Dispose()
+        {
+            i_am_dead_by_time = null;
+            my_timer_for_dead.Stop();
+            my_timer_for_dead.Dispose();
+            game.stop_game -= stop_timer;
+            game.start_game -= start_timer;
+            game.restart_event -= call_event_dead;
+            base.Dispose();
+        }
+    }
+    class ghosts_wall : generall_wall
+    {
+        protected override Bitmap get_picture() => naprav switch { napravlenie_for_wall.horizontal => Properties.Resources.GhostWallHorizontal, napravlenie_for_wall.vertical => Properties.Resources.GhostWallVertical, napravlenie_for_wall.left_down => Properties.Resources.GhostWallLeftDown, napravlenie_for_wall.left_up => Properties.Resources.GhostWallLeftUp, napravlenie_for_wall.right_up => Properties.Resources.GhostWallRightUp, napravlenie_for_wall.right_down => Properties.Resources.GhostWallRightDown, null => Properties.Resources.SimpleKletka };
+        public override bool free_or_not_for_ghost_object { get => true; }
+        public ghosts_wall(int x, int y, int xk, int yk, kletka my_kletka) : base(x, y, xk, yk, my_kletka) { }
+    }
+    class kletka : generall_class, IDisposable
+    {
+        int x, y, xk, yk;
+        object_in_kletka? content;
+        public event Action checking_eat;
+        public (int, int) my_coords { get => (xk, yk); }
+        public (int, int) left_top { get => (x, y); }
+        public object_in_kletka? my_object_in_kletka { get => content; }
+        public bool free_or_not_for_phisic_object { get => content?.free_or_not_for_phisic_object ?? true; }
+        public bool free_or_not_for_ghost_object { get => content?.free_or_not_for_ghost_object ?? true; }
+        public (int, int) this[napravlenie storona_kletki] { get => (storona_kletki == napravlenie.left) ? (x, y + size_of_kletki / 2) : (storona_kletki == napravlenie.right) ? (x + size_of_kletki, y + size_of_kletki / 2) : (storona_kletki == napravlenie.down) ? (x + size_of_kletki / 2, y + size_of_kletki) : (x + size_of_kletki / 2, y); }
+        public (int, int) center_of_kletki { get => (x + size_of_kletki / 2, y + size_of_kletki / 2); }
+        public void create_object_in_me(type_of_object? creating_object, bool need_in_show = true, bool is_temporary = true)
+        {
+            if (creating_object != null)
+            {
+                delete_my_object(false);
+                switch (creating_object)
+                {
+                    case type_of_object.wall: { content = new wall(x, y, xk, yk, this); } break;
+                    case type_of_object.point: content = new point(x, y, this); break;
+                    case type_of_object.superbonus: { content = new superbonus(x, y, this, is_temporary); ((superbonus)content).i_am_dead += () => delete_my_object(true); } break;
+                    case type_of_object.gates: { content = new gates(x, y, xk, yk, this); } break;
+                    case type_of_object.bonus: { content = new bonus(x, y, this, is_temporary); ((bonus)content).i_am_dead += () => delete_my_object(true); } break;
+                    case type_of_object.superpoint: content = new superpoint(x, y, this); break;
+                    case type_of_object.ghosts_wall: { content = new ghosts_wall(x, y, xk, yk, this); } break;
+                    case type_of_object.barrier: { content = new barrier(x, y, xk, yk, this); ((barrier)content).i_am_dead_by_time += () => delete_my_object(true); } break;
+                    default: content = null; break;
+                };
+                if (need_in_show)
+                    content.show();
+            }
+            else
+                content = null;
+        }
+        public void show() { if (content != null) content.show(); else place_for_game.CreateGraphics().DrawImage(Properties.Resources.SimpleKletka, x, y);}
+        public void show(Graphics frame, int i, int j)
+        {
+            if (content != null)
+                content.show(frame, i, j);
+            else
+                frame.DrawImage(Properties.Resources.SimpleKletka, j * size_of_kletki, i * size_of_kletki);
+        }
+        public kletka(int x, int y, int xk, int yk, pole game) => (this.xk, this.x, this.yk, this.y) = (xk, x, yk, y);
+        public void check_eat()
+        {
+            if (content != null)
+            {
+                object_in_kletka deleted_object_in_kletka = content;
+                content = null;
+                checking_eat();
+                deleted_object_in_kletka.Dispose();
+            }
+        }
+        public void delete_my_object(bool need_in_show = true)
+        {
+            if (content != null)
+            {
+                object_in_kletka deleted_object_in_kletka = content;
+                content = null;
+                deleted_object_in_kletka.Dispose();
+                if (need_in_show) show();
+            }
+        }
+        public void Dispose()
+        {
+            content?.Dispose();
+            checking_eat = null;
+        }
+    }
+    enum napravlenie { left, up, right, down };
+    abstract class unit : generall_class, IDisposable
+    {
+        protected event Func<int, int, bool[]> CHECK_WALLS;
+        public virtual event Func<int, int, bool[]> check_walls { add { CHECK_WALLS += value; if (is_for_time) { start_timer(); timer_for_dead.Start(); timer_for_animate.Start(); } } remove => CHECK_WALLS -= value; }
+        public static event Func<int, int, napravlenie, (int,int)[]> check_teleport;
+        public event Func<napravlenie, (int, int)[]> get_coords_for_restart;
+        public static event Action<int> unit_is_deleting;
+        public static event Action<FrameEventArgs> fill_background_in_frame;
+        static event Action<FrameByUnitEventArgs> fill_frame_by_units;
+        protected bool is_alive = true;
+        public class FrameByUnitEventArgs : EventArgs
+        {
+            public Rectangle oblast;
+            public Graphics frame;
+        }
+        public class FrameEventArgs : EventArgs
+        {
+            public int xk, yk, width, height;
+            public Graphics frame;
+        }
+        protected ImageList images_for_show;
+        protected System.Timers.Timer timer_for_animate;
+        protected int index_for_animate;
+        protected Mutex mutex = new();
+        protected bool is_for_time { get; init; }
+        protected System.Timers.Timer timer_for_dead;
+        private napravlenie TO;
+        protected napravlenie to 
+        {
+            get => TO;
+            set
+            {
+                int xp = (value == napravlenie.left) ? -1 : (value == napravlenie.right) ? 1 : 0;
+                int yp = (value == napravlenie.down) ? 1 : (value == napravlenie.up) ? -1 : 0;
+                mutex.WaitOne();
+                if (((int)value + 2) % 4 == (int)TO)
+                    (xperekl, yperekl) = (xperekl + xp * size_of_kletki, yperekl + yp * size_of_kletki);
+                else
+                {
+                    int xpTO = (TO == napravlenie.left) ? -1 : (TO == napravlenie.right) ? 1 : 0;
+                    int ypTO = (TO == napravlenie.down) ? 1 : (TO == napravlenie.up) ? -1 : 0;
+                    (xperekl, yperekl) = (xperekl + xp * size_of_kletki / 2 - xpTO * size_of_kletki / 2, yperekl + yp * size_of_kletki / 2 - ypTO * size_of_kletki / 2);
+                }
+                TO = value;
+                mutex.ReleaseMutex();
+            }
+        }
+        protected int x, y, xk, yk, xperekl, yperekl, x_center_kletki, y_center_kletki, number_of_unit;
+        protected System.Timers.Timer timer_of_object;
+        protected bool[] get_walls_around() => CHECK_WALLS(xk, yk);
+        protected void set_coords((int, int)[] coords) => ((x, y), (xk, yk), (xperekl, yperekl), (x_center_kletki, y_center_kletki)) = (coords[0], coords[1], coords[2], coords[3]);
+        static protected void show(int xkobnov, int ykobnov, int xper, int yper, napravlenie to, bool with_units = true)
+        {
+            Bitmap newframe = new(3 * size_of_kletki, 3 * size_of_kletki);
+            fill_background_in_frame(new FrameEventArgs() { xk = xkobnov - 1, yk = ykobnov - 1, height = 3, width = 3, frame = Graphics.FromImage(newframe) });
+            int xpicture = xper - (int)to % 2 * size_of_kletki * 3 / 2 - ((int)to + 1) % 2 * size_of_kletki - (int)to / 2 * ((int)to + 1) % 2 * size_of_kletki, ypicture = yper - ((int)to + 1) % 2 * size_of_kletki * 3 / 2 - (int)to % 2 * size_of_kletki - (int)to / 2 * (int)to % 2 * size_of_kletki;
+            if (with_units) fill_frame_by_units(new FrameByUnitEventArgs() { frame = Graphics.FromImage(newframe), oblast = new Rectangle(xpicture, ypicture, newframe.Width, newframe.Height) });
+            if (game.game_is_going) place_for_game.CreateGraphics().DrawImage(newframe, xpicture, ypicture);
+        }
+        void show(FrameByUnitEventArgs data)
+        {
+            if (data.oblast.IntersectsWith(new Rectangle(x - size_of_kletki * 7 / 8, y - size_of_kletki * 7 / 8, size_of_kletki * 14 / 8, size_of_kletki * 14 / 8)))
+                show(data.frame, x - data.oblast.Left, y - data.oblast.Top);
+        }
+        protected void peredvizenie()
+        {
+            mutex.WaitOne();
+            int yp = (to == napravlenie.left || to == napravlenie.right) ? 0 : (to == napravlenie.up) ? -1 : 1;
+            int xp = (to == napravlenie.up || to == napravlenie.down) ? 0 : (to == napravlenie.left) ? -1 : 1;
+            x += xp;
+            y += yp;
+            (int oldxk, int oldyk, int xper, int yper, napravlenie napr) = (xk, yk, xperekl, yperekl, to);
+            if (to == napravlenie.right && x >= xperekl || to == napravlenie.left && x <= xperekl || to == napravlenie.up && y <= yperekl || to == napravlenie.down && y >= yperekl)
+            {
+                xperekl += xp * size_of_kletki;
+                yperekl += yp * size_of_kletki;
+                yk -= yp;
+                xk += xp;
+                (int, int)[] coords = check_teleport(xk, yk, to);
+                (oldxk, oldyk, xper, yper, napr) = (xk, yk, xperekl, yperekl, to);
+                if (coords != null)
+                    set_coords(coords);
+            }
+            mutex.ReleaseMutex();
+            Task.Run(() => show(oldxk, oldyk, xper, yper, napr));
+
+        }
+        public abstract void moving();
+        protected virtual void set_other_in_restart(int lvl, int eat, int left_lives) { }
+        void restart(int lvl, int eat, int left_lives)
+        {
+            if (number_of_unit < 5)
+            {
+                set_other_in_restart(lvl, eat, left_lives);
+                show(xk, yk, xperekl, yperekl, to, false);
+                set_coords(get_coords_for_restart(to));
+                show();
+            }
+            else
+                call_event_delete_me(number_of_unit);
+        }
+        protected unit(int interval, int number_of_unit, bool is_for_time, Bitmap[] images_for_animate)
+        {
+            (xk, yk, this.number_of_unit, this.is_for_time) = (4, 4, number_of_unit, is_for_time);
+            timer_of_object = new() { Interval = interval, Enabled = false };
+            timer_of_object.Elapsed += delegate { moving(); };
+            unit_is_deleting += change_number_of_unit;
+            game.start_game += start_timer;
+            game.stop_game += stop_timer;
+            place_for_game.Paint += show;
+            if (is_for_time)
+            {
+                game.start_game += start_timer_for_dead;
+                game.stop_game += stop_timer_for_dead;
+            }
+            if (number_of_unit < 5)
+                game.game_ended += () => get_coords_for_restart = null;
+
+            game.restart_event += restart;
+            fill_frame_by_units += show; 
+            images_for_show = new() { ImageSize = new Size(size_of_kletki * 14 / 8, size_of_kletki * 14 / 8) };
+            images_for_show.Images.AddRange(images_for_animate);
+            index_for_animate = 0;
+            timer_for_animate = new(105);
+            game.start_game += start_timer_for_animate;
+            game.stop_game += stop_timer_for_animate;
+        }
+        void change_number_of_unit(int number_of_deleting) 
+        { 
+            if (number_of_unit > number_of_deleting) 
+                number_of_unit--; 
+        }
+        protected void start_timer_for_dead() => timer_for_dead.Enabled = true;
+        protected void stop_timer_for_dead() => timer_for_dead.Enabled = false;
+        protected static void call_event_delete_me(int number) => unit_is_deleting(number);
+        abstract protected void show();
+        void show(object sender, PaintEventArgs e)
+        {
+            if (e.ClipRectangle.IntersectsWith(new Rectangle(x - size_of_kletki, y - size_of_kletki, 2 * size_of_kletki, 2 * size_of_kletki)) && game.game_is_going)
+                show();
+        }
+        abstract protected void show(Graphics frame, int cordx, int cordy);
+        protected void start_timer_for_animate() => timer_for_animate.Start();
+        protected void stop_timer_for_animate() => timer_for_animate.Stop();
+        protected void start_timer() => timer_of_object.Enabled = true;
+        protected void stop_timer() => timer_of_object.Enabled = false;
+        public virtual void Dispose()
+        {
+            timer_of_object.Stop();
+            Task.Run(() => show(xk, yk, xperekl, yperekl, to));
+            timer_of_object.Dispose();
+            fill_frame_by_units -= show;
+            game.start_game -= start_timer;
+            game.stop_game -= stop_timer;
+            game.restart_event -= restart;
+            place_for_game.Paint -= show;
+            if (is_for_time)
+            {
+                is_alive = false;
+                timer_for_dead.Enabled = false;
+                timer_for_dead.Dispose();
+                game.start_game -= start_timer_for_dead;
+                game.stop_game -= stop_timer_for_dead;
+            }
+            images_for_show.Dispose();
+            timer_for_animate.Dispose();
+            unit_is_deleting -= change_number_of_unit;
+            (CHECK_WALLS, get_coords_for_restart) = (null, null);
+            game.start_game -= start_timer_for_animate;
+            game.stop_game -= stop_timer_for_animate;
+        }
+    }
+    class pacman : unit
+    {
+        napravlenie naprav;
+        public static event Action<pacman_EventArgs> check_killing;
+        public static event Action<int, int> checking_eat_object_in_kletka;
+        public static event Action pacman_dead;
+
+        Label label;
+        long max_time = 0;
+        System.Diagnostics.Stopwatch watches = new();
+
+        public class pacman_EventArgs : EventArgs
+        {
+            public int xk, yk;
+            public bool am_i_dead;
+            public pacman_EventArgs(int xk, int yk) => (this.xk, this.yk, this.am_i_dead) = (xk, yk, false);
+        }
+        public override void moving()
+        {
+            watches.Stop();
+            long sadad = watches.ElapsedMilliseconds;
+            label.BeginInvoke(new Action(() => { label.Text = sadad.ToString(); }));
+            //watches.Start();
+
+            (int oldxk, int oldyk) = (xk, yk);
+            if (x == x_center_kletki && y == y_center_kletki)
+            {
+                bool[] walls = get_walls_around();
+                if (to != naprav && walls[(int)naprav])
+                    to = naprav;
+                (int xp, int yp) = (((int)to - 1) % 2, ((int)to - 2) % 2);
+                if (walls[(int)to])
+                {
+                    peredvizenie();
+                    (x_center_kletki, y_center_kletki) = (x_center_kletki + xp * size_of_kletki, y_center_kletki + yp * size_of_kletki);
+                }
+            }
+            else
+                peredvizenie();
+            if (oldxk != xk || oldyk != yk)
+                checking_eat_object_in_kletka(xk, yk);
+            pacman_EventArgs ret = new(xk, yk);
+            check_killing?.Invoke(ret);
+            if (ret.am_i_dead)
+                pacman_dead();
+
+            //watches.Stop();
+            watches.Restart();
+            //label.BeginInvoke(new Action(() => { label.Text = watches.ElapsedMilliseconds.ToString(); }));
+            //if (max_time < watches.ElapsedMilliseconds)
+            //    max_time = watches.ElapsedMilliseconds;
+        }
+        void change_naprav_KeyPress(object sender, KeyEventArgs e)
+        {
+            naprav = (e.KeyCode == Keys.Up) ? napravlenie.up : (e.KeyCode == Keys.Down) ? napravlenie.down : (e.KeyCode == Keys.Right) ? napravlenie.right : (e.KeyCode == Keys.Left) ? napravlenie.left : naprav;
+            if ((int)naprav == ((int)to + 2) % 4 && (x != x_center_kletki || y != y_center_kletki))
+            {
+                to = naprav;
+                (x_center_kletki, y_center_kletki) = (x_center_kletki + ((int)to - 1) % 2 * size_of_kletki, y_center_kletki + ((int)to - 2) % 2 * size_of_kletki);
+            }
+        }
+        protected override void show()
+        {
+            if (index_for_animate != 2)
+                images_for_show.Draw(place_for_game.CreateGraphics(), x - size_of_kletki * 7 / 8, y - size_of_kletki * 7 / 8, (int)to + index_for_animate * 4); 
+            else 
+                images_for_show.Draw(place_for_game.CreateGraphics(), x - size_of_kletki * 7 / 8, y - size_of_kletki * 7 / 8, 8);
+        }
+        protected override void show(Graphics frame, int cordx, int cordy)
+        {
+            if (index_for_animate != 2) 
+                images_for_show.Draw(frame, cordx - size_of_kletki * 7 / 8, cordy - size_of_kletki * 7 / 8, (int)to + index_for_animate * 4); 
+            else 
+                images_for_show.Draw(frame, cordx - size_of_kletki * 7 / 8, cordy - size_of_kletki * 7 / 8, 8);
+        }
+        protected override void set_other_in_restart(int lvl, int eat, int left_lives)
+        {
+            to = napravlenie.left;
+            naprav = to;
+        }
+        public void Deconstruct(out int xk, out int yk, out napravlenie to, out napravlenie naprav) => (xk, yk, to, naprav) = (this.xk, this.yk, this.to, this.naprav);
+        public pacman(int number_of_unit, bool is_for_time, Label label) : base(1, number_of_unit/*130 / size_of_kletki*/, is_for_time, new Bitmap[] { Properties.Resources.Pacman1Left, Properties.Resources.Pacman1Up, Properties.Resources.Pacman1Right, Properties.Resources.Pacman1Down, Properties.Resources.Pacman2Left, Properties.Resources.Pacman2Up, Properties.Resources.Pacman2Right, Properties.Resources.Pacman2Down, Properties.Resources.Pacman3 })
+        {
+            this.label = label;
+            place_for_game.KeyDown += change_naprav_KeyPress;
+            enemy.get_coords_from_player += () => (xk, yk, to);
+            timer_for_animate.Elapsed += delegate { index_for_animate = ++index_for_animate % 3; };
+        }
+        public override void Dispose()
+        {
+            place_for_game.KeyDown -= change_naprav_KeyPress;
+            enemy.get_coords_from_player -= () => (xk, yk, to);
+            base.Dispose();
+        }
+    }
+    abstract class enemy : unit
+    {
+        static public event Func<(int, int, napravlenie)> get_coords_from_player;
+        static protected (int, int, napravlenie) coords_from_player() => get_coords_from_player();
+
+        protected Action proverka_povorota;
+        protected int xkt, ykt;
+        protected void going_to_target(bool ismax)
+        {
+            if (x == x_center_kletki && y == y_center_kletki)
+            {
+                choose_napravlenie(ismax);
+                (x_center_kletki, y_center_kletki) = (x_center_kletki + ((int)to - 1) % 2 * size_of_kletki, y_center_kletki + ((int)to - 2) % 2 * size_of_kletki);
+            }
+        }
+        protected void choose_napravlenie(bool ismax)
+        {
+            bool[] walls = get_walls_around();
+            if (walls[((int)to + 2) % 4] && !walls[((int)to + 1) % 4] && !walls[((int)to + 3) % 4] && !walls[(int)to])
+                to = (napravlenie)(((int)to + 2) % 4);
+            else
+            {
+                int oldprotivopnaprav = ((int)to + 2) % 4, length = (ismax) ? 0 : 1000000000;
+                for (int i = ((int)oldprotivopnaprav + 1) % 4; i != oldprotivopnaprav; i = (i + 1) % 4)
+                    if (walls[i] && (ismax && length < (xkt - (xk + (i - 1) % 2)) * (xkt - (xk + (i - 1) % 2)) + (ykt - (yk - (i - 2) % 2)) * (ykt - (yk - (i - 2) % 2)) || !ismax && length > (xkt - (xk + (i - 1) % 2)) * (xkt - (xk + (i - 1) % 2)) + (ykt - (yk - (i - 2) % 2)) * (ykt - (yk - (i - 2) % 2))))
+                    {
+                        to = (napravlenie)i;
+                        length = (xkt - (xk + (i - 1) % 2)) * (xkt - (xk + (i - 1) % 2)) + (ykt - (yk - (i - 2) % 2)) * (ykt - (yk - (i - 2) % 2));
+                    }
+            }
+        }
+        public override void moving()
+        {
+            proverka_povorota();
+            peredvizenie();
+        }
+        protected void choose_napravlenie_in_random()
+        {
+            bool[] walls = get_walls_around();
+            if (walls[((int)to + 2) % 4] && !walls[((int)to + 1) % 4] && !walls[((int)to + 3) % 4] && !walls[(int)to])
+                to = (napravlenie)(((int)to + 2) % 4);
+            else if (walls[((int)to + 2) % 4] || walls[((int)to + 1) % 4] || walls[((int)to + 3) % 4] || walls[(int)to])
+            {
+                napravlenie oldprotivopnaprav = (napravlenie)(((int)to + 2) % 4);
+                do to = (napravlenie)((new Random()).Next() % 4); while (!walls[(int)to] || to == oldprotivopnaprav);
+            }
+        }
+        protected enemy(int interval, bool is_for_time, int number_of_unit, Bitmap[] images_for_animate) : base(interval, number_of_unit, is_for_time, images_for_animate) { }
+        protected void going_random()
+        {
+            if (x == x_center_kletki && y == y_center_kletki)
+            {
+                choose_napravlenie_in_random();
+                (x_center_kletki, y_center_kletki) = (x_center_kletki + ((int)to - 1) % 2 * size_of_kletki, y_center_kletki + ((int)to - 2) % 2 * size_of_kletki);
+            }
+        }
+    }
+    class bullet : unit
+    {
+        public static event Func<int, int, bool> delete_wall_in_my_kletka;
+        public static event Action<int, int> check_killing_units;
+        bool find_wall = false, is_teleported = true;
+        public override event Func<int, int, bool[]> check_walls { add { CHECK_WALLS += value;  start_timer(); } remove => CHECK_WALLS -= value; }
+        public override void moving()
+        {
+            (int oldxk, int oldyk) = (xk, yk);
+            peredvizenie();
+            if (oldxk != xk || oldyk != yk)
+            {
+                if (Math.Abs(oldxk - xk) + Math.Abs(oldyk - yk) > 1)
+                {
+                    if (is_teleported = !is_teleported)
+                        call_event_delete_me(number_of_unit);
+                }
+                if (find_wall)
+                {
+                    if (!delete_wall_in_my_kletka(xk, yk))
+                        call_event_delete_me(number_of_unit);
+                }
+                else
+                    find_wall = delete_wall_in_my_kletka(xk, yk);
+            }
+            check_killing_units(xk, yk);
+        }
+        protected override void show() => images_for_show.Draw(place_for_game.CreateGraphics(), x - size_of_kletki * 7 / 8, y - size_of_kletki * 7 / 8, (int)to);
+        protected override void show(Graphics frame, int cordx, int cordy) => images_for_show.Draw(frame, cordx - size_of_kletki * 7 / 8, cordy - size_of_kletki * 7 / 8, (int)to);
+        public bullet(int number_of_unit, napravlenie to, (int, int)[] coords) : base(1, number_of_unit, false, new Bitmap[] { Properties.Resources.BulletLeft, Properties.Resources.BulletUp, Properties.Resources.BulletRight, Properties.Resources.BulletDown })
+        {
+            images_for_show.ImageSize = ((int)to % 2 == 1) ? new Size(size_of_kletki * 6 / 8, size_of_kletki * 12 / 8) : new Size(size_of_kletki * 12 / 8, size_of_kletki * 6 / 8);
+            this.to = to;
+            set_coords(coords);
+        }
+    }
+    abstract class simple_enemy : enemy
+    {
+        public static event Action<int> get_score;
+        void checking_kill(int xkp, int ykp)
+        {
+            if (xkp == xk && ykp == yk)
+            {
+                get_score(200);
+                call_event_delete_me(number_of_unit);
+            }
+        }
+        void check_kill_by_pacman(pacman.pacman_EventArgs data) 
+        { 
+            if (!data.am_i_dead) 
+                checking_kill(data.xk, data.yk); 
+        }
+        public simple_enemy(int number_of_unit, (int, int)[] coords, Bitmap[] images_for_animate, int interval) : base(interval, true, number_of_unit, images_for_animate)
+        {
+            bullet.check_killing_units += checking_kill;
+            pacman.check_killing += check_kill_by_pacman;
+            timer_for_animate.Elapsed += delegate { index_for_animate = ++index_for_animate % 2; };
+            proverka_povorota = checking_povovorota;
+            set_coords(coords);
+        }
+        abstract protected void checking_povovorota();
+        protected override void show()
+        {
+            if (is_alive) images_for_show.Draw(place_for_game.CreateGraphics(), x - size_of_kletki * 7 / 8, y - size_of_kletki * 7 / 8, index_for_animate + (int)to * 2);
+        }
+        protected override void show(Graphics frame, int cordx, int cordy)
+        {
+            if (is_alive) images_for_show.Draw(frame, cordx - size_of_kletki * 7 / 8, cordy - size_of_kletki * 7 / 8, index_for_animate + (int)to * 2);
+        }
+        public override void Dispose()
+        {
+            bullet.check_killing_units -= checking_kill;
+            pacman.check_killing -= check_kill_by_pacman;
+            timer_for_dead?.Stop();
+            timer_for_dead?.Dispose();
+            base.Dispose();
+        }
+    }
+    class creater_of_ghost : simple_enemy
+    {
+        public static event Action<int> get_ghost;
+        public creater_of_ghost(int number_of_unit, (int, int)[] coords): base(number_of_unit, coords, new Bitmap[] { Properties.Resources.Purple1Left, Properties.Resources.Purple2Left, Properties.Resources.Purple1Up, Properties.Resources.Purple2Up, Properties.Resources.Purple1Right, Properties.Resources.Purple2Right, Properties.Resources.Purple1Down, Properties.Resources.Purple2Down }, 25)
+        {
+            timer_for_dead = new(12000) { AutoReset = false };
+            timer_for_dead.Elapsed += delegate
+            {
+                timer_for_dead.Dispose();
+                get_ghost(new Random().Next() % 4);
+                call_event_delete_me(this.number_of_unit);
+            };
+        }
+        protected override void checking_povovorota()
+        {
+            (xkt, ykt, _) = coords_from_player(); 
+            going_to_target(true);
+        }
+    }
+    class creater_of_barrier : simple_enemy
+    {
+        public static event Action<int, int> barrier_created;
+        System.Timers.Timer timer_for_creating_barrier;
+        public override event Func<int, int, bool[]> check_walls { add { CHECK_WALLS += value; if (is_for_time) { start_timer(); timer_for_dead.Start(); timer_for_creating_barrier.Start(); timer_for_animate.Start(); } } remove => CHECK_WALLS -= value; }
+        protected override void checking_povovorota() => going_random();
+        public creater_of_barrier(int number_of_unit, (int, int)[] coords) : base(number_of_unit, coords, new Bitmap[] { Properties.Resources.Green1Left, Properties.Resources.Green2Left, Properties.Resources.Green1Up, Properties.Resources.Green2Up, Properties.Resources.Green1Right, Properties.Resources.Green2Right, Properties.Resources.Green1Down, Properties.Resources.Green2Down }, 1)
+        {
+            timer_for_creating_barrier = new(3000);
+            timer_for_creating_barrier.Elapsed += delegate { barrier_created(xk, yk); };
+            timer_for_dead = new(15000) { AutoReset = false };
+            timer_for_dead.Elapsed += delegate
+            { 
+                call_event_delete_me(this.number_of_unit); 
+            };
+        }
+        public override void Dispose()
+        {
+            timer_for_creating_barrier.Stop();
+            timer_for_creating_barrier.Dispose();
+            base.Dispose();
+        }
+    }
+    abstract class ghost : enemy
+    {
+        protected enum Condition { run_away, weakness, chase, dead, moving_in_house, entering_to_house, coming_to_free }
+        int xt, yt, points_to_freedom, time_to_freedom, normal_number_of_points, normal_time_to_freedom;
+        Condition condition;
+        System.Timers.Timer timer_for_getting_free;
+        static int[] times_for_conditions;
+        static int time_for_weakness, index_in_times, kol_vo_of_eaten_ghosts;
+        static System.Timers.Timer timer_for_generall_condition, timer_for_last_second_in_weakness;
+        static event Action generall_condition_changed;
+        static event Action weakness_ended_event;
+        public static event Func<(int, int)> get_coords_for_moving_in_house;
+        public static event Func<napravlenie, (int, int)[]> get_coords_of_place_over_gates;
+        public static event Action<int> ghost_eaten;
+        public static event Func<(int, int)> get_absolute_coords_of_center_house;
+        static ImageList animate_weakness, animate_end_weakness, animate_dead;
+        static void delete_timer_for_last_second()
+        {
+            timer_for_last_second_in_weakness.Stop();
+            timer_for_last_second_in_weakness.Dispose();
+            game.start_game -= start_timer_for_last_second;
+            game.stop_game -= stop_timer_for_last_second;
+        }
+        static void set_timer_in_weakness()
+        {
+            stop_timer_for_condition();
+            timer_for_generall_condition.Dispose();
+            timer_for_generall_condition = new(time_for_weakness);
+            if (timer_for_last_second_in_weakness != null)
+                delete_timer_for_last_second();
+            last_second_in_weakness = false;
+            timer_for_last_second_in_weakness = new(time_for_weakness - 1000) { AutoReset = false };
+            timer_for_last_second_in_weakness.Elapsed += delegate { last_second_in_weakness = true; };
+            game.start_game += start_timer_for_last_second;
+            game.stop_game += stop_timer_for_last_second;
+            timer_for_generall_condition.Elapsed += delegate { weakness_ended_event(); };
+            timer_for_last_second_in_weakness.Start();
+            timer_for_generall_condition.Start();
+        }
+        static void start_timer_for_last_second() => timer_for_last_second_in_weakness.Start();
+        static void stop_timer_for_last_second() { last_second_in_weakness = false; timer_for_last_second_in_weakness.Start(); }
+        static void time_for_weakness_ended()
+        {
+            (kol_vo_of_eaten_ghosts, last_second_in_weakness) = (0, false);
+            timer_for_generall_condition.Stop();
+            timer_for_generall_condition.Dispose();
+            timer_for_generall_condition = new();
+            timer_for_generall_condition.Elapsed += change_generall_timer;
+            delete_timer_for_last_second();
+            if (index_in_times != times_for_conditions.Length)
+            {
+                timer_for_generall_condition.Interval = times_for_conditions[index_in_times];
+                start_timer_for_condition();
+            }
+        }
+        static ghost()
+        {
+            timer_for_generall_condition = new();
+            timer_for_generall_condition.Elapsed += change_generall_timer;
+            game.restart_event += set_data;
+            game.start_game += start_timer_for_condition;
+            game.stop_game += stop_timer_for_condition;
+            superpoint.superpoint_eaten += set_timer_in_weakness;
+            weakness_ended_event += time_for_weakness_ended;
+            game.game_ended += () => { (get_coords_for_moving_in_house, get_absolute_coords_of_center_house, get_coords_of_place_over_gates) = (null, null, null); };
+            animate_weakness = new() { ImageSize = new Size(size_of_kletki * 14 / 8, size_of_kletki * 14 / 8) };
+            animate_weakness.Images.AddRange(new Bitmap[] { Properties.Resources.Weakness1, Properties.Resources.Weakness2 });
+            animate_end_weakness = new() { ImageSize = new Size(size_of_kletki * 14 / 8, size_of_kletki * 14 / 8) };
+            animate_end_weakness.Images.AddRange(new Bitmap[] { Properties.Resources.WeaknessEnd1, Properties.Resources.WeaknessEnd2 });
+            animate_dead = new() { ImageSize = new Size(size_of_kletki * 14 / 8, size_of_kletki * 14 / 8) };
+            animate_dead.Images.AddRange(new Bitmap[] { Properties.Resources.EyeLeft, Properties.Resources.EyeUp, Properties.Resources.EyeRight, Properties.Resources.EyeDown });
+            //(animate_dead.TransparentColor, animate_end_weakness.TransparentColor, animate_weakness.TransparentColor) = (Color.Black, Color.Black, Color.Black);
+        }
+        static bool last_second_in_weakness = false;
+        static void set_data(int lvl, int eat, int left_lives)
+        {
+            if (timer_for_last_second_in_weakness != null) { timer_for_last_second_in_weakness.Stop(); timer_for_last_second_in_weakness.Dispose(); game.start_game -= start_timer_for_last_second; game.stop_game -= stop_timer_for_last_second; }
+            time_for_weakness = (lvl < 5) ? 7000 - (lvl - 1) * 500 : 4000;
+            kol_vo_of_eaten_ghosts = 0;
+            times_for_conditions = (lvl == 1) ? new int[] { 7000, 20000, 7000, 20000, 5000, 20000, 5000 } : (lvl >= 1 && lvl <= 3) ? new int[] { 7000, 20000, 7000, 20000, 5000 } : new int[] { 5000, 20000, 5000, 20000, 5000 };
+            index_in_times = 0;
+            timer_for_generall_condition.Interval = times_for_conditions[0];
+            timer_for_last_second_in_weakness?.Stop();
+            timer_for_last_second_in_weakness?.Dispose();
+            last_second_in_weakness = false;
+        }
+        static void change_generall_timer(Object source, System.Timers.ElapsedEventArgs e)
+        {
+            stop_timer_for_condition();
+            ++index_in_times;
+            generall_condition_changed();
+            if (index_in_times != times_for_conditions.Length)
+            {
+                timer_for_generall_condition.Interval = times_for_conditions[index_in_times];
+                start_timer_for_condition();
+            }
+        }
+        static void start_timer_for_condition()
+        {
+            if (index_in_times != times_for_conditions.Length)
+                timer_for_generall_condition.Start();
+        }
+        static void stop_timer_for_condition() => timer_for_generall_condition.Stop();
+        protected override void show()
+        {
+            if (condition == Condition.dead || condition == Condition.entering_to_house)
+                animate_dead.Draw(place_for_game.CreateGraphics(), x - size_of_kletki * 7 / 8, y - size_of_kletki * 7 / 8, (int)to);
+            else if (condition == Condition.weakness)
+            {
+                if (last_second_in_weakness) 
+                    animate_end_weakness.Draw(place_for_game.CreateGraphics(), x - size_of_kletki * 7 / 8, y - size_of_kletki * 7 / 8, index_for_animate); 
+                else 
+                    animate_weakness.Draw(place_for_game.CreateGraphics(), x - size_of_kletki * 7 / 8, y - size_of_kletki * 7 / 8, index_for_animate);
+            }
+            else if (is_alive)
+                images_for_show.Draw(place_for_game.CreateGraphics(), x - size_of_kletki * 7 / 8, y - size_of_kletki * 7 / 8, index_for_animate + (int)to * 2);
+        }
+        protected override void show(Graphics frame, int cordx, int cordy)
+        {
+            if (condition == Condition.dead || condition == Condition.entering_to_house)
+                animate_dead.Draw(frame, cordx - size_of_kletki * 7 / 8, cordy - size_of_kletki * 7 / 8, (int)to);
+            else if (condition == Condition.weakness)
+            {
+                if (last_second_in_weakness) 
+                    animate_end_weakness.Draw(frame, cordx - size_of_kletki * 7 / 8, cordy - size_of_kletki * 7 / 8, index_for_animate);
+                else
+                    animate_weakness.Draw(frame, cordx - size_of_kletki * 7 / 8, cordy - size_of_kletki * 7 / 8, index_for_animate);
+            }
+            else if(is_alive)
+                images_for_show.Draw(frame, cordx - size_of_kletki * 7 / 8, cordy - size_of_kletki * 7 / 8, index_for_animate + (int)to * 2);
+        }
+        void check_killing(pacman.pacman_EventArgs data)
+        {
+            if (!data.am_i_dead && xk == data.xk && yk == data.yk)
+            {
+                if (condition == Condition.weakness)
+                {
+                    ghost_eaten(200 * ++kol_vo_of_eaten_ghosts);
+                    if (is_for_time) call_event_delete_me(number_of_unit); else set_condition_in_dead();
+                }
+                else if (condition != Condition.dead)
+                    data.am_i_dead = true;
+            }
+        }
+        void check_killing_by_bullet(int xkplayer, int ykplayer)
+        {
+            if (xk == xkplayer && yk == ykplayer && condition != Condition.coming_to_free && condition != Condition.dead && condition != Condition.entering_to_house && condition != Condition.moving_in_house)
+            {
+                ghost_eaten(200);
+                if (is_for_time) 
+                    call_event_delete_me(number_of_unit); 
+                else 
+                    set_condition_in_dead();
+            }
+        }
+        protected abstract (int, int) coords_for_run_away();
+        abstract protected void set_coords_of_target(int xkp, int ykp, napravlenie top);
+        void going_in_house()
+        {
+            if (to == napravlenie.up && y <= yt)
+                to = napravlenie.down;
+            else if (to == napravlenie.down && y >= xt)
+                to = napravlenie.up;
+        }
+        void going_in_entering_to_house()
+        {
+            if (yt == y)
+                set_condition_in_going_to_freedom();
+        }
+        void going_to_absolute_target_in_kletka()
+        {
+            going_to_target(false);
+            if (x == xt && y == yt)
+                set_condition_in_entering_to_house();
+
+        }
+        void going_to_freedom()
+        {
+            if (x > xt) { if (to != napravlenie.left) to = napravlenie.left; }
+            else if (x < xt) { if (to != napravlenie.right) to = napravlenie.right; }
+            else if (to != napravlenie.up) to = napravlenie.up;
+            else if (x == xt && y == yt)
+            {
+                to = napravlenie.left;
+                set_coords(get_coords_of_place_over_gates(to));
+                set_condition_in_general_condition(false);
+            }
+        }
+        void set_condition_in_dead()
+        {
+            timer_of_object.Interval = 1;
+            (int, int)[] coords_of_target = get_coords_of_place_over_gates(napravlenie.left);
+            ((xt, yt), (xkt, ykt)) = (coords_of_target[0], coords_of_target[1]);
+            condition = Condition.dead;
+            proverka_povorota = going_to_absolute_target_in_kletka;
+        }
+        void set_condition_in_weakness()
+        {
+            if (condition == Condition.chase || condition == Condition.run_away)
+            {
+                timer_of_object.Interval = 30;
+                condition = Condition.weakness;
+                proverka_povorota = going_random;
+                to = (napravlenie)(((int)to + 2) % 4);
+                (x_center_kletki, y_center_kletki) = (x_center_kletki + ((int)to - 1) % 2 * size_of_kletki, y_center_kletki + ((int)to - 2) % 2 * size_of_kletki);
+            }
+        }
+        void set_condition_in_entering_to_house()
+        {
+            if (condition == Condition.dead)
+            {
+                (xt, yt) = get_absolute_coords_of_center_house();
+                condition = Condition.entering_to_house;
+                proverka_povorota = going_in_entering_to_house;
+                to = napravlenie.down;
+            }
+        }
+        void start_timer_to_freedom() => timer_for_getting_free?.Start();
+        void stop_timer_to_freedom() => timer_for_getting_free?.Stop();
+        void set_condition_in_moving_in_house()
+        {
+            if (points_to_freedom > 0)
+            {
+                if (condition != Condition.moving_in_house)
+                {
+                    point.eaten_point += point_eaten;
+                    condition = Condition.moving_in_house;
+                    proverka_povorota = going_in_house;
+                    game.start_game += start_timer_to_freedom;
+                    game.stop_game += stop_timer_to_freedom;
+                }
+                (xt, yt) = get_coords_for_moving_in_house();
+                to = napravlenie.up;
+                if (timer_for_getting_free != null)
+                {
+                    timer_for_getting_free.Stop();
+                    timer_for_getting_free.Dispose();
+                }
+                timer_for_getting_free = (time_to_freedom > 0) ? new(time_to_freedom) : new(1);
+                timer_for_getting_free.Elapsed += delegate
+                {
+                    set_condition_in_going_to_freedom();
+                };
+            }
+            else
+                set_condition_in_going_to_freedom();
+        }
+        void set_condition_in_going_to_freedom()
+        {
+            if (condition == Condition.moving_in_house)
+            {
+                point.eaten_point -= point_eaten;
+                timer_for_getting_free.Stop();
+                timer_for_getting_free.Dispose();
+                game.start_game -= start_timer_to_freedom;
+                game.stop_game -= stop_timer_to_freedom;
+            }
+            (xt, yt) = get_coords_of_place_over_gates(napravlenie.left)[0];
+            condition = Condition.coming_to_free;
+            proverka_povorota = going_to_freedom;
+        }
+        void set_condition_in_general_condition(bool change_to)
+        {
+            if (index_in_times % 2 == 0) set_condition_in_run_away(change_to); else set_condition_in_chase(change_to);
+        }
+        void set_condition_in_chase(bool change_to)
+        {
+            if (condition == Condition.weakness || condition == Condition.run_away || condition == Condition.coming_to_free)
+            {
+                condition = Condition.chase;
+                proverka_povorota = () => { (int xkp, int ykp, napravlenie top) = coords_from_player(); set_coords_of_target(xkp, ykp, top); going_to_target(false); };
+                if (change_to)
+                {
+                    to = (napravlenie)(((int)to + 2) % 4);
+                    (x_center_kletki, y_center_kletki) = (x_center_kletki + ((int)to - 1) % 2 * size_of_kletki, y_center_kletki + ((int)to - 2) % 2 * size_of_kletki);
+                }
+            }
+        }
+        void set_condition_in_run_away(bool change_to)
+        {
+            if (condition == Condition.weakness || condition == Condition.chase || condition == Condition.coming_to_free || condition == Condition.run_away)
+            {
+                (xkt, ykt) = coords_for_run_away();
+                condition = Condition.run_away;
+                proverka_povorota = () => going_to_target(false);
+                if (change_to)
+                {
+                    to = (napravlenie)(((int)to + 2) % 4);
+                    (x_center_kletki, y_center_kletki) = (x_center_kletki + ((int)to - 1) % 2 * size_of_kletki, y_center_kletki + ((int)to - 2) % 2 * size_of_kletki);
+                }
+            }
+        }
+        void set_condition_after_weakness()
+        {
+            if (condition == Condition.weakness)
+            {
+                timer_of_object.Interval = 1;
+                set_condition_in_general_condition(true);
+            }
+        }
+        void point_eaten()
+        {
+            if (condition == Condition.moving_in_house)
+            {
+                if (--points_to_freedom == 0)
+                    set_condition_in_going_to_freedom();
+                else
+                {
+                    timer_for_getting_free?.Stop();
+                    timer_for_getting_free?.Start();
+                }
+            }
+        }
+        protected override void set_other_in_restart(int lvl, int eat, int left_lives) => (timer_of_object.Interval, to, points_to_freedom, time_to_freedom) = (1, napravlenie.left, normal_number_of_points - lvl * 15 - (3 - left_lives) * (3 - left_lives) * 15, normal_time_to_freedom - lvl * 200 - (3 - left_lives) * (3 - left_lives) * 250);
+        protected ghost(int interval, Condition condition, Bitmap[] pictures, bool is_for_time, int normal_time_to_free, int normal_points_to_free, int number_of_unit) : base(interval, is_for_time, number_of_unit, pictures)
+        {
+            (this.normal_number_of_points, this.normal_time_to_freedom) = (normal_points_to_free, normal_time_to_free);
+            if (is_for_time)
+            {
+                to = napravlenie.left;
+                set_coords(get_coords_of_place_over_gates(to));
+                set_condition_in_general_condition(false);
+                timer_for_dead = new(5000) { AutoReset = false };
+                timer_for_dead.Elapsed += delegate { call_event_delete_me(this.number_of_unit); };
+            }
+            else if (condition == Condition.moving_in_house)
+                game.restart_event += (int lvl, int eat, int life) => { timer_for_getting_free?.Stop(); timer_for_getting_free?.Dispose(); set_condition_in_moving_in_house(); };
+            else
+                game.restart_event += (int lvl, int eat, int life) => { this.condition = Condition.chase; set_condition_in_run_away(false); };
+            timer_for_animate.Elapsed += delegate { index_for_animate = ++index_for_animate % 2; };
+            generall_condition_changed += after_generall_condition_changed;
+            pacman.check_killing += check_killing;
+            bullet.check_killing_units += check_killing_by_bullet;
+            superpoint.superpoint_eaten += set_condition_in_weakness;
+            weakness_ended_event += set_condition_after_weakness;
+        }
+        void after_generall_condition_changed()
+        {
+            if (this.condition != Condition.coming_to_free) 
+                set_condition_in_general_condition(true);
+        }
+        public override void Dispose()
+        {
+            if (Condition.moving_in_house == condition)
+            {
+                point.eaten_point -= point_eaten;
+                timer_for_getting_free.Stop();
+                timer_for_getting_free.Dispose();
+                game.start_game -= start_timer_to_freedom;
+                game.stop_game -= stop_timer_to_freedom;
+            }
+            generall_condition_changed -= after_generall_condition_changed;
+            pacman.check_killing -= check_killing;
+            bullet.check_killing_units -= check_killing_by_bullet;
+            superpoint.superpoint_eaten -= set_condition_in_weakness;
+            weakness_ended_event -= set_condition_after_weakness;
+            base.Dispose();
+        }
+    }
+    class redghost : ghost
+    {
+        public static event Func<(int, int)> get_coords_for_run_away;
+        static int points_to_free = 0, time_to_free = 0;
+        public redghost(bool is_for_time, int number_of_unit) : base(1/*180*/, Condition.run_away, new Bitmap[] { Properties.Resources.Red1Left, Properties.Resources.Red2Left, Properties.Resources.Red1Up, Properties.Resources.Red2Up, Properties.Resources.Red1Right, Properties.Resources.Red2Right, Properties.Resources.Red1Down, Properties.Resources.Red2Down }, is_for_time, time_to_free, points_to_free, number_of_unit) { }
+        protected override (int, int) coords_for_run_away() => get_coords_for_run_away();
+        protected override void set_coords_of_target(int xkp, int ykp, napravlenie top) => (xkt, ykt) = (xkp, ykp);
+    }
+    class blueghost : ghost
+    {
+        public static event Func<(int, int)> get_coords_for_run_away;
+        static int time_to_free = 8000, points_to_free = 60;
+        protected override (int, int) coords_for_run_away() => get_coords_for_run_away();
+        public blueghost(bool is_for_time, int number_of_unit) : base(1/*280*/, Condition.moving_in_house, new Bitmap[] { Properties.Resources.Blue1Left, Properties.Resources.Blue2Left, Properties.Resources.Blue1Up, Properties.Resources.Blue2Up, Properties.Resources.Blue1Right, Properties.Resources.Blue2Right, Properties.Resources.Blue1Down, Properties.Resources.Blue2Down }, is_for_time, time_to_free, points_to_free, number_of_unit) { }
+        protected override void set_coords_of_target(int xkp, int ykp, napravlenie top) => (xkt, ykt) = (2 * xkp - xk, 2 * ykp - yk);
+    }
+    class pinkghost : ghost
+    {
+        public static event Func<(int, int)> get_coords_for_run_away;
+        static int time_to_free = 4000, points_to_free = 30;
+        public pinkghost(bool is_for_time, int number_of_unit) : base(1/*280*/, Condition.moving_in_house, new Bitmap[] { Properties.Resources.Pink1Left, Properties.Resources.Pink2Left, Properties.Resources.Pink1Up, Properties.Resources.Pink2Up, Properties.Resources.Pink1Right, Properties.Resources.Pink2Right, Properties.Resources.Pink1Down, Properties.Resources.Pink2Down }, is_for_time, time_to_free, points_to_free, number_of_unit) { }
+        protected override (int, int) coords_for_run_away() => get_coords_for_run_away();
+        protected override void set_coords_of_target(int xkp, int ykp, napravlenie top) => (xkt, ykt) = (xkp + ((int)top - 1) % 2 * 4, ykp - ((int)top - 2) % 2 * 4);
+    }
+    class orangeghost : ghost
+    {
+        public static event Func<(int, int)> get_coords_for_run_away;
+        static int time_to_free = 12000, points_to_free = 90;
+        public orangeghost(bool is_for_time, int number_of_unit) : base(1/*280*/, Condition.moving_in_house, new Bitmap[] { Properties.Resources.Orange1Left, Properties.Resources.Orange2Left, Properties.Resources.Orange1Up, Properties.Resources.Orange2Up, Properties.Resources.Orange1Right, Properties.Resources.Orange2Right, Properties.Resources.Orange1Down, Properties.Resources.Orange2Down }, is_for_time, time_to_free, points_to_free, number_of_unit) { }
+        protected override (int, int) coords_for_run_away() => get_coords_for_run_away();
+        protected override void set_coords_of_target(int xkp, int ykp, napravlenie top) => (xkt, ykt) = (Math.Pow(xkp - xk, 2) + Math.Pow(ykp - yk, 2) > 64) ? (xkp, ykp) : coords_for_run_away();
+    }
+    class pole : generall_class, IDisposable
+    {
+        int sizex, sizey, karta, LIFE, SCORE, max_score, LVL, eat, max_eat, KOL_VO_EATEN_ENEMY = 0, KOL_VO_BULLETS;
+        List<List<kletka>> map;
+        List<unit> all_units;
+        bool GAME_IS_STOPPED;
+        System.Drawing.Text.PrivateFontCollection fontcollection = new System.Drawing.Text.PrivateFontCollection();
+        private int score 
+        { 
+            get => SCORE; 
+            set
+            {
+                panels_for_interface[0].Controls[1].BeginInvoke(new Action(() => panels_for_interface[0].Controls[0].Controls[1].Text = (SCORE = value).ToString()));
+                if (SCORE > max_score)
+                    panels_for_interface[0].Controls[2].Controls[1].BeginInvoke(new Action(() => panels_for_interface[0].Controls[2].Controls[1].Text = (max_score = SCORE).ToString()));
+            }
+        }
+        private int lvl
+        {
+            get => LVL;
+            set => panels_for_interface[0].Controls[0].BeginInvoke(new Action(() => panels_for_interface[0].Controls[1].Controls[1].Text = (LVL = value).ToString()));
+        }
+        private int kol_vo_eaten_enemy
+        {
+            get => KOL_VO_EATEN_ENEMY;
+            set => panels_for_interface[4].Controls[0].BeginInvoke(new Action(() => panels_for_interface[4].Controls[0].Text = "X" + (KOL_VO_EATEN_ENEMY = value).ToString()));
+        }
+        private int kol_vo_bullets
+        {
+            get => KOL_VO_BULLETS;
+            set => panels_for_interface[2].Controls[0].BeginInvoke(new Action(() => panels_for_interface[2].Controls[0].Text = "X" + (KOL_VO_BULLETS = value).ToString()));
+        }
+        private int life{ get => LIFE; set { LIFE = value; panels_for_interface[3].Controls[0].BeginInvoke(new Action(() => panels_for_interface[3].Controls[0].Text = "X" + value.ToString())); } }
+        Mutex mutex_for_objects = new();
+        Mutex mutex_for_map = new();
+
+        Panel[] panels_for_interface;
+        public bool game_is_stopped_on_pause { get => GAME_IS_STOPPED; private set { if (GAME_IS_STOPPED = value) stop_game(); else start_game(); } }
+        public bool game_is_going { get; private set; }
+        public bool map_is_setting { get; private set; }
+        public bool map_is_deleting { get; private set; }
+
+        public event Action<int, int, int> restart_event;
+        public event Action start_game;
+        public event Action stop_game;
+        public event Action walls_is_setted;
+        public event Action<string, bool> score_changed;
+        public event Action game_ended;
+        void handler_of_press_key(object sender, KeyEventArgs e)
+        {
+            switch (e.KeyCode)
+            {
+                case Keys.Escape: { game_is_stopped_on_pause = !game_is_stopped_on_pause; panels_for_interface[1].BeginInvoke(new Action(() => panels_for_interface[1].Visible = game_is_stopped_on_pause)); } break;
+                case Keys.Space: delete_ghost_walls(); break;
+                case Keys.ShiftKey: create_bullet(); break;
+            }
+        }
+        void create_bullet()
+        {
+            if (kol_vo_bullets > 0)
+            {
+                kol_vo_bullets--;
+                (int xk, int yk, napravlenie to, _) = ((pacman)all_units[0]);
+                mutex_for_objects.WaitOne();
+                all_units.Add(new bullet(all_units.Count, to, get_coords_for_object_in_center(xk, yk, to)));
+                all_units[all_units.Count - 1].check_walls += check_walls_for_phisic_object;
+                mutex_for_objects.ReleaseMutex();
+            }
+        }
+        void delete_ghost_walls()
+        {
+            if (kol_vo_eaten_enemy > 0)
+            {
+                (int xk, int yk, napravlenie to, napravlenie naprav) = (pacman)all_units[0];
+                int xp = ((int)to - 1) % 2, yp = -((int)to - 2) % 2, i = 0;
+                if (to == naprav)
+                {
+                    while (map[yk + i * yp][xk + i * xp].my_object_in_kletka is not generall_wall && xk + (i + 1) * xp < sizex && xk + (i + 1) * xp >= 0 && yk + (i + 1) * yp < sizey && yk + (i + 1) * yp >= 0) i++;
+                    if (map[yk + i * yp][xk + i * xp].my_object_in_kletka is ghosts_wall)
+                    {
+                        kol_vo_eaten_enemy--;
+                        while (map[yk + i * yp][xk + i * xp].my_object_in_kletka is ghosts_wall && xk + i * xp < sizex && xk + i * xp >= 0 && yk + i * yp < sizey && yk + i * yp >= 0)
+                            map[yk + i * yp][xk + i++ * xp].delete_my_object();
+                    }
+                }
+                else
+                {
+                    int xpnapr = ((int)naprav - 1) % 2, ypnapr = -((int)naprav - 2) % 2;
+                    while (map[yk + yp * i + ypnapr][xk + xp * i + xpnapr].my_object_in_kletka is not ghosts_wall && map[yk + yp * i + ypnapr][xk + xp * i + xpnapr].my_object_in_kletka is generall_wall && map[yk + yp * i][xk + xp * i].my_object_in_kletka is not generall_wall && xk + i * xp < sizex && xk + i * xp >= 0 && yk + i * yp < sizey && yk + i * yp >= 0) i++;
+                    if (map[yk + i * yp + ypnapr][xk + i * xp + xpnapr].my_object_in_kletka is ghosts_wall)
+                    {
+                        kol_vo_eaten_enemy--;
+                        for (int j = 1; map[yk + yp * i + ypnapr * j][xk + i * xp + xpnapr * j].my_object_in_kletka is ghosts_wall; j++) map[yk + yp * i + ypnapr * j][xk + i * xp + xpnapr * j].delete_my_object();
+                        for (int j = 0; map[yk + yp * i + ypnapr * j][xk + i * xp + xpnapr * j].my_object_in_kletka is ghosts_wall; j--) map[yk + yp * i + ypnapr * j][xk + i * xp + xpnapr * j].delete_my_object();
+                    }
+                }
+            }
+        }
+        void restart_game()
+        {
+            game_is_stopped_on_pause = true;
+            if (--life != 0)
+            {
+                restart_event(lvl, eat, life);
+                game_is_stopped_on_pause = false;
+            }
+            else
+                delete_this_game();
+        }
+        void increase_and_show_score(int count) => score += count;
+        void next_lvl()
+        {
+            game_is_stopped_on_pause = true;
+            map_is_setting = true;
+            StreamReader sr = (karta == 1) ? new("data") : new("data1");
+            string map_from_file = sr.ReadToEnd();
+            sr.Dispose();
+            for (int i = 0; i < sizey; i++)
+                for (int j = 0; j < sizex; j++)
+                {
+                    type_of_object? pered = (map_from_file[i * sizex + j] == '1') ? type_of_object.wall : (map_from_file[i * sizex + j] == '2') ? type_of_object.point : (map_from_file[i * sizex + j] == '3') ? type_of_object.superpoint : (map_from_file[i * sizex + j] == '4') ? type_of_object.gates : (map_from_file[i * sizex + j] == '5') ? type_of_object.bonus : (map_from_file[i * sizex + j] == '6') ? type_of_object.barrier : (map_from_file[i * sizex + j] == '7') ? type_of_object.ghosts_wall : (map_from_file[i * sizex + j] == '8') ? type_of_object.superbonus : null;
+                    map[i][j].create_object_in_me(pered, false, false);
+                }
+            map_is_setting = false;
+            walls_is_setted();
+            place_for_game.Invalidate();
+            (lvl, life, eat) = (lvl + 1, 4, 0);
+            //eat = 290;
+            restart_game();
+        }
+        (int, int)[] get_coords_for_object_on_the_side(int xk, int yk, napravlenie to, napravlenie storona_kletki) => (to != storona_kletki) ? new (int, int)[] { map[yk][xk][storona_kletki], (xk, yk), map[yk][xk][to], map[yk][xk].center_of_kletki } : new (int, int)[] { map[yk - ((int)to - 2) % 2][xk + ((int)to - 1) % 2][(napravlenie)(((int)storona_kletki + 2) % 4)], (xk + ((int)to - 1) % 2, yk - ((int)to - 2) % 2), map[yk - ((int)to - 2) % 2][xk + ((int)to - 1) % 2][to], map[yk - ((int)to - 2) % 2][xk + ((int)to - 1) % 2].center_of_kletki };
+        (int, int)[] get_coords_for_object_in_center(int xk, int yk, napravlenie to) => new (int, int)[] { map[yk][xk].center_of_kletki, (xk, yk), map[yk][xk][to], map[yk - ((int)to - 2) % 2][xk + ((int)to - 1) % 2].center_of_kletki };
+        bool[] check_walls_for_phisic_object(int xk, int yk) => new bool[] { map[yk][xk - 1].free_or_not_for_phisic_object, map[yk + 1][xk].free_or_not_for_phisic_object, map[yk][xk + 1].free_or_not_for_phisic_object, map[yk - 1][xk].free_or_not_for_phisic_object };
+        bool[] check_walls_for_ghost_object(int xk, int yk) => new bool[] { map[yk][xk - 1].free_or_not_for_ghost_object, map[yk + 1][xk].free_or_not_for_ghost_object, map[yk][xk + 1].free_or_not_for_ghost_object, map[yk - 1][xk].free_or_not_for_ghost_object };
+        (int, int)[]? check_teleport(int xk, int yk, napravlenie to) => (to == napravlenie.left && xk <= 1) ? get_coords_for_object_on_the_side(sizex - 3, yk, to, napravlenie.right) : (to == napravlenie.right && xk >= sizex - 2) ? get_coords_for_object_on_the_side(2, yk, to, napravlenie.left) : (to == napravlenie.down && yk <= 1) ? get_coords_for_object_on_the_side(xk, sizey - 4, to, napravlenie.up) : (to == napravlenie.up && yk >= sizey - 3) ? get_coords_for_object_on_the_side(xk, 2, to, napravlenie.down) : null;
+        void fill_backgraound_of_frame(unit.FrameEventArgs data)
+        {
+            mutex_for_map.WaitOne();
+            if (game_is_going && !map_is_deleting && data.yk >= 0 && data.yk + data.height <= sizey && data.yk >= 0 && data.xk + data.width <= sizex)
+                for (int i = 0; i < data.height; i++)
+                    for (int j = 0; j < data.width; j++)
+                        map[data.yk + i][data.xk + j].show(data.frame, data.height - 1 - i, j);
+            mutex_for_map.ReleaseMutex();
+        }
+        void obnov_kletki(object sender, PaintEventArgs e)
+        {
+            Rectangle rectangle = e.ClipRectangle;
+            if (sizex != 0 && !map_is_deleting && game_is_going)
+            {
+                (int x, int y) = map[sizey - 1][0].left_top;
+                if (rectangle.IntersectsWith(new Rectangle(x, y, x + size_of_kletki * sizex, y + size_of_kletki * sizey)))
+                {
+                    Bitmap frame = new Bitmap((rectangle.Size.Width / size_of_kletki + 1) * size_of_kletki, (rectangle.Size.Height / size_of_kletki + 1) * size_of_kletki);
+                    Graphics graphics = Graphics.FromImage(frame);
+                    int yk = (rectangle.Top > y && rectangle.Bottom < y + sizey * size_of_kletki) ? (rectangle.Top - y) / size_of_kletki : (rectangle.Top <= y) ? 0 : sizey - 1;
+                    int xk = (rectangle.Left > x && rectangle.Right < x + sizex * size_of_kletki) ? (rectangle.Left - x) / size_of_kletki : (rectangle.Left <= x) ? 0 : sizex - 1;
+                    for (int i1 = 0, i = yk; i <= (rectangle.Bottom - y) / size_of_kletki && i < sizey; i++, i1++)
+                        for (int j1 = 0, j = xk; j <= (rectangle.Right - x) / size_of_kletki && j < sizex; j++, j1++)
+                            map[sizey - 1 - i][j].show(graphics, i1, j1);
+                    (int cordx, int cordy) = map[sizey - 1 - yk][xk].left_top;
+                    place_for_game.CreateGraphics().DrawImage(frame, cordx, cordy);
+                }
+            }
+        }
+        void delete_this_game()
+        {
+            mutex_for_map.WaitOne();
+            game_ended();
+            (game_is_stopped_on_pause, map_is_deleting) = (true, true);
+            for (int i = 0; i < sizey; i++)
+            {
+                for (int j = 0; j < sizex; j++)
+                    map[i][j].Dispose();
+                map[i].Clear();
+            }
+            map.Clear();
+            mutex_for_objects.WaitOne();
+            for (int i = 5; i < all_units.Count; i++)
+                all_units[i].Dispose();
+            mutex_for_objects.ReleaseMutex();
+            all_units.RemoveRange(5, all_units.Count - 5);
+            Array.ForEach(panels_for_interface, (Panel panel) => panel.BeginInvoke(new Action<Panel>((panel1) => panel1.Visible = false), panel));
+            (score, lvl, sizex, sizey, game_is_going, map_is_deleting) = (0, 0, 0, 0, false, false);
+            mutex_for_map.ReleaseMutex();
+        }
+        public pole(Panel[] panels_for_interface, Label label, Form1 Form_for_game, Button button_for_continue, Button button_for_end_of_the_game)
+        {
+            fontcollection.AddFontFile("Teletactile.ttf");
+            (this.panels_for_interface, place_for_game, generall_class.game, map_is_setting, map_is_deleting) = (panels_for_interface, Form_for_game, this, false, false);
+            (score, lvl, sizex, sizey, game_is_going, map_is_deleting) = (0, 0, 0, 0, false, false);
+            Array.ForEach(panels_for_interface, (Panel panel) => panel.Visible = false);
+            button_for_continue.Click += delegate { game_is_stopped_on_pause = !game_is_stopped_on_pause; panels_for_interface[1].BeginInvoke(new Action(() => { panels_for_interface[1].Visible = game_is_stopped_on_pause; place_for_game.Focus(); }));  };
+            button_for_end_of_the_game.Click += delegate { delete_this_game(); panels_for_interface[1].BeginInvoke(new Action(() => panels_for_interface[1].Visible = false)); };
+            place_for_game.KeyDown += handler_of_press_key;
+            place_for_game.Paint += obnov_kletki;
+            using (BinaryReader reader = new BinaryReader(File.Open("datamax_eat", FileMode.Open))) { max_score = reader.ReadInt32(); }
+            panels_for_interface[0].Controls[2].Controls[1].Text = max_score.ToString();
+            all_units = new(5) { new pacman(0, false, label), new redghost(false, 1), new pinkghost(false, 2), new blueghost(false, 3), new orangeghost(false, 4) };
+            all_units[0].check_walls += check_walls_for_phisic_object;
+            for (int i = 2; i < 5; i++)
+                panels_for_interface[i].Controls[0].Font = new Font(fontcollection.Families[0], 2 * size_of_kletki, GraphicsUnit.Pixel);
+            for (int i = 1; i < 5; i++)
+                all_units[i].check_walls += check_walls_for_ghost_object;
+            unit.check_teleport += check_teleport;
+            redghost.get_coords_for_run_away += () => (0, sizey - 1);
+            pinkghost.get_coords_for_run_away += () => (sizex - 1, sizey - 1);
+            blueghost.get_coords_for_run_away += () => (sizex - 1, 0);
+            orangeghost.get_coords_for_run_away += () => (0, 0);
+            pacman.checking_eat_object_in_kletka += (xk, yk) => map[yk][xk].check_eat();
+            pacman.pacman_dead += restart_game;
+            ghost.ghost_eaten += (kol_vo_score) => { increase_and_show_score(kol_vo_score); kol_vo_eaten_enemy++; };
+            simple_enemy.get_score += (score) => { increase_and_show_score(score); kol_vo_eaten_enemy++; };
+            creater_of_ghost.get_ghost += (type_of_ghost) =>
+            {
+                mutex_for_objects.WaitOne();
+                switch (type_of_ghost)
+                {
+                    case 0: { all_units.Add(new redghost(true, all_units.Count)); } break;
+                    case 1: { all_units.Add(new pinkghost(true, all_units.Count)); } break;
+                    case 2: { all_units.Add(new blueghost(true, all_units.Count)); } break;
+                    case 3: { all_units.Add(new orangeghost(true, all_units.Count)); } break;
+                }
+                all_units[all_units.Count - 1].check_walls += check_walls_for_ghost_object;
+                mutex_for_objects.ReleaseMutex();
+            };
+            generall_bonus.eaten_generall_bonus_event += increase_and_show_score;
+            point.eaten_point += point_eaten;
+            superbonus.pribavlenie_bonusa += (superbonus.type_of_bonus type_bonusa) =>
+            {
+                if (type_bonusa == superbonus.type_of_bonus.deleting_ghost_wall) kol_vo_eaten_enemy++;
+                else if (type_bonusa == superbonus.type_of_bonus.bullet) kol_vo_bullets++;
+            };
+            generall_wall.this_wall_destroyed_or_create += (xk, yk) =>
+            {
+                for (int i = -1; i <= 1; i++)
+                    for (int j = -1; j <= 1; j++)
+                        (map[yk + i][xk + j].my_object_in_kletka as generall_wall)?.nearest_wall_destoyed();
+            };
+            generall_wall.get_walls_for_changing_picture += (xk, yk) => new bool[,] { { map[yk - 1][xk - 1].free_or_not_for_phisic_object, map[yk - 1][xk].free_or_not_for_phisic_object, map[yk - 1][xk + 1].free_or_not_for_phisic_object }, { map[yk][xk - 1].free_or_not_for_phisic_object, false, map[yk][xk + 1].free_or_not_for_phisic_object }, { map[yk + 1][xk - 1].free_or_not_for_phisic_object, map[yk + 1][xk].free_or_not_for_phisic_object, map[yk + 1][xk + 1].free_or_not_for_phisic_object } };
+            creater_of_barrier.barrier_created += (xk, yk) => { map[yk][xk].create_object_in_me(type_of_object.barrier); };
+            bullet.delete_wall_in_my_kletka += (xk, yk) => { 
+                if (map[yk][xk].my_object_in_kletka is generall_wall) 
+                { 
+                    map[yk][xk].delete_my_object(); 
+                    return true; 
+                } 
+                else 
+                    return false; 
+            };
+            unit.unit_is_deleting += (number) =>
+            {
+                mutex_for_objects.WaitOne();
+                all_units[number].Dispose(); 
+                all_units.RemoveAt(number);
+                mutex_for_objects.ReleaseMutex();
+            };
+            unit.fill_background_in_frame += fill_backgraound_of_frame;
+        }
+        kletka find_free_kletka()
+        {
+            Random ran = new();
+            int xk, yk;
+            do { (xk, yk) = (ran.Next(2, sizex - 3), ran.Next(2, sizey - 3)); } while (!map[yk][xk].free_or_not_for_phisic_object);
+            return map[yk][xk];
+        }
+        void point_eaten()
+        {
+            if (++eat == max_eat)
+                next_lvl();
+            else if ((double)eat / max_eat >= 0.291 && (double)(eat - 1) / max_eat < 0.291 || (double)eat / max_eat >= 0.708 && (double)(eat - 1) / max_eat < 0.708)
+                find_free_kletka().create_object_in_me(type_of_object.bonus);
+            else if (karta == 2 && ((double)eat / max_eat >= 0.15 && (double)(eat - 1) / max_eat < 0.15 || (double)eat / max_eat >= 0.508 && (double)(eat - 1) / max_eat < 0.508))
+                find_free_kletka().create_object_in_me(type_of_object.superbonus);
+            else if (karta == 2 && eat % (max_eat / 15) > (eat + 1) % (max_eat / 15))
+            {
+                mutex_for_objects.WaitOne();
+                kletka spavn = find_free_kletka();
+                switch (new Random().Next() % 2)
+                {
+                    case 0: all_units.Add(new creater_of_ghost(all_units.Count, new (int, int)[] { spavn.center_of_kletki, spavn.my_coords, spavn[napravlenie.left], spavn.center_of_kletki })); break;
+                    case 1: all_units.Add(new creater_of_barrier(all_units.Count, new (int, int)[] { spavn.center_of_kletki, spavn.my_coords, spavn[napravlenie.left], spavn.center_of_kletki })); break;
+                }
+                all_units[all_units.Count - 1].check_walls += check_walls_for_phisic_object;
+                mutex_for_objects.ReleaseMutex();
+            }
+        }
+        void set_karta((int, int, int, int) data)
+        {
+            (karta, sizex, sizey, max_eat) = data;
+            for (int i = 0; i < panels_for_interface.Length; i++) if (i != 1 && (karta != 1 || i != 2 && i != 4)) panels_for_interface[i].Visible = true;
+            map = new(sizey);
+            int x_center = place_for_game.Width / 2, y_center = place_for_game.Height / 2;
+            for (int i = 0; i < sizey; i++)
+            {
+                map.Add(new(sizex));
+                for (int j = 0; j < sizex; j++)
+                    map[i].Add(new(x_center + (j - sizex / 2) * size_of_kletki, y_center +(sizey / 2 - 2 - i) * size_of_kletki, j, i, this));
+            }
+            ((int x1, int y1), (int x2, _), (_, int y2), (int x3, _), (_, int y3), (int x4, _), (_, int y4)) = (map[sizey - 1][2].left_top, map[1][2].center_of_kletki, map[1][2].left_top, map[1][sizex - 2 - 8].center_of_kletki, map[1][sizex - 2 - 8].left_top, map[1][sizex / 2 - 3].center_of_kletki, map[1][sizex / 2 - 3].left_top);
+            (panels_for_interface[0].Size, panels_for_interface[0].Location, panels_for_interface[0].Controls[0].Location, panels_for_interface[0].Controls[2].Location, panels_for_interface[0].Controls[1].Location, panels_for_interface[3].Location, panels_for_interface[3].Size, panels_for_interface[3].Controls[1].Size, panels_for_interface[2].Size, panels_for_interface[2].Controls[1].Size, panels_for_interface[3].Controls[0].Location, panels_for_interface[2].Controls[0].Location, panels_for_interface[2].Location, panels_for_interface[4].Location, panels_for_interface[4].Controls[1].Size, panels_for_interface[4].Controls[0].Location) = (new Size((sizex - 4) * size_of_kletki, panels_for_interface[0].Size.Height), new Point(x1, y1), new Point((sizex / 4 - 6) * size_of_kletki, 0), new Point((sizex / 2 - 7) * size_of_kletki, 0), new Point((sizex * 3 / 4 - 3) * size_of_kletki, 0), new Point(x2, y2), new Size(sizex / 4 * size_of_kletki, 2 * size_of_kletki), new Size(2 * size_of_kletki, 2 * size_of_kletki), new Size(sizex / 4 * size_of_kletki, 2 * size_of_kletki), new Size(size_of_kletki, 2 * size_of_kletki), new Point(2 * size_of_kletki, panels_for_interface[3].Height / 6), new Point(size_of_kletki, panels_for_interface[3].Height / 6), new Point(x3, y3), new Point(x4, y4), new Size(2 * size_of_kletki, 2 * size_of_kletki), new Point(2 * size_of_kletki, 0));
+            if (karta == 1)
+            {
+                (panels_for_interface[0].Controls[0].Controls[0].Font, panels_for_interface[0].Controls[0].Controls[1].Font, panels_for_interface[0].Controls[1].Controls[0].Font, panels_for_interface[0].Controls[1].Controls[1].Font, panels_for_interface[0].Controls[2].Controls[0].Font, panels_for_interface[0].Controls[2].Controls[1].Font) = (new Font(fontcollection.Families[0], size_of_kletki * 3 / 4, GraphicsUnit.Pixel), new Font(fontcollection.Families[0], size_of_kletki * 3 / 4, GraphicsUnit.Pixel), new Font(fontcollection.Families[0], size_of_kletki * 3 / 4, GraphicsUnit.Pixel), new Font(fontcollection.Families[0], size_of_kletki * 3 / 4, GraphicsUnit.Pixel), new Font(fontcollection.Families[0], size_of_kletki * 3 / 4, GraphicsUnit.Pixel), new Font(fontcollection.Families[0], size_of_kletki * 3 / 4, GraphicsUnit.Pixel));
+                all_units[0].get_coords_for_restart += to => get_coords_for_object_on_the_side(sizex / 2, 9, to, napravlenie.left);
+                all_units[1].get_coords_for_restart += to => get_coords_for_object_on_the_side(sizex / 2, 21, to, napravlenie.left);
+                all_units[2].get_coords_for_restart += to => get_coords_for_object_on_the_side(sizex / 2, 19, to, napravlenie.left);
+                all_units[3].get_coords_for_restart += to => get_coords_for_object_on_the_side(sizex / 2 - 2, 17, to, napravlenie.left);
+                all_units[4].get_coords_for_restart += to => get_coords_for_object_on_the_side(sizex / 2 + 2, 17, to, napravlenie.left);
+                ghost.get_coords_for_moving_in_house += () => { (_, int y1) = map[17][0].center_of_kletki; (_, int y2) = map[19][0].center_of_kletki; return (y1, y2); };
+                ghost.get_absolute_coords_of_center_house += () => map[18][sizex / 2][napravlenie.left];
+                ghost.get_coords_of_place_over_gates += (to) => get_coords_for_object_on_the_side(sizex / 2, 21, to, napravlenie.left);
+            }
+            else
+            {
+                (panels_for_interface[0].Controls[0].Controls[0].Font, panels_for_interface[0].Controls[0].Controls[1].Font, panels_for_interface[0].Controls[1].Controls[0].Font, panels_for_interface[0].Controls[1].Controls[1].Font, panels_for_interface[0].Controls[2].Controls[0].Font, panels_for_interface[0].Controls[2].Controls[1].Font) = (new Font(fontcollection.Families[0], size_of_kletki, GraphicsUnit.Pixel), new Font(fontcollection.Families[0], size_of_kletki, GraphicsUnit.Pixel), new Font(fontcollection.Families[0], size_of_kletki, GraphicsUnit.Pixel), new Font(fontcollection.Families[0], size_of_kletki, GraphicsUnit.Pixel), new Font(fontcollection.Families[0], size_of_kletki, GraphicsUnit.Pixel), new Font(fontcollection.Families[0], size_of_kletki, GraphicsUnit.Pixel));
+                all_units[0].get_coords_for_restart += to => get_coords_for_object_in_center(sizex / 2, 10, to);
+                all_units[1].get_coords_for_restart += to => get_coords_for_object_in_center(sizex / 2, 22, to);
+                all_units[2].get_coords_for_restart += to => get_coords_for_object_in_center(sizex / 2, 19, to);
+                all_units[3].get_coords_for_restart += to => get_coords_for_object_in_center(sizex / 2 - 3, 17, to);
+                all_units[4].get_coords_for_restart += to => get_coords_for_object_in_center(sizex / 2 + 3, 17, to);
+                ghost.get_coords_for_moving_in_house += () => { (_, int y1) = map[16][0].center_of_kletki; (_, int y2) = map[20][0].center_of_kletki; return (y1, y2); };
+                ghost.get_absolute_coords_of_center_house += () => map[18][sizex / 2].center_of_kletki;
+                ghost.get_coords_of_place_over_gates += (to) => get_coords_for_object_in_center(sizex / 2, 22, to);
+            }
+            (panels_for_interface[0].Controls[0].Controls[1].Size, panels_for_interface[0].Controls[1].Controls[1].Size, panels_for_interface[0].Controls[2].Controls[1].Size) = (panels_for_interface[0].Controls[0].Controls[0].Size, panels_for_interface[0].Controls[1].Controls[0].Size, panels_for_interface[0].Controls[2].Controls[0].Size);
+        }
+        public void create_classic_game()
+        {
+            set_karta((1, 32, 36, 242));
+            game_is_going = true;
+            next_lvl();
+        }
+        public void create_new_game()
+        {
+            set_karta((2, 55, 38, 335));
+            (game_is_going, kol_vo_eaten_enemy, kol_vo_bullets) = (true, 0, 0);
+            next_lvl();
+        }
+        public void Dispose()
+        {
+            using (BinaryWriter writer = new BinaryWriter(File.Open("datamax_eat", FileMode.Create))) { writer.Write(max_score); }
+        }
+    }
+}
